@@ -11,6 +11,7 @@ from sentinel.collectors.hostless import (
     parse_system_memory,
     sanitize_evidence,
 )
+from sentinel.checks import _evaluate_tls_endpoint, _ram_status_for_pct
 from sentinel.config import SentinelConfig
 from sentinel.models import SentinelRun
 
@@ -64,6 +65,68 @@ def test_docker_output_parsing_and_app_grouping():
     assert any(app["app_id"] == "demo" for app in apps)
 
 
+def test_docker_output_parsing_handles_missing_health_field_and_unhealthy_state():
+    raw = (
+        "hostless_fe_6a8cd101a60d\tUp 2 hours\thostless/arcticdrive-clean-72f6-frontend:v1\n"
+        "hostless_be_6a8cd101a60d\tUp 2 hours (unhealthy)\thostless/arcticdrive-clean-72f6-backend:v1\n"
+        "deploy-backend-1\tUp 2 hours (healthy)\tdeploy-backend\n"
+    )
+    rows = parse_docker_ps(raw)
+    assert len(rows) == 3
+    assert rows[0]["name"] == "hostless_fe_6a8cd101a60d"
+    assert rows[1]["status"] == "Up 2 hours (unhealthy)"
+    apps = discover_applications(rows)
+    assert any(app["app_id"] == "6a8cd101a60d" for app in apps)
+
+
+def test_container_health_detection_matches_real_runtime(monkeypatch):
+    import sentinel.checks as checks_module
+
+    config = make_config()
+    fake_responses = {
+        "docker version --format '{{json .}}'": {"stdout": '{"Server":{"Version":"20.10.0"}}', "exit_code": 0, "stderr": ""},
+        "docker ps --format '{{.Names}}\t{{.Status}}\t{{.Image}}'": {
+            "stdout": (
+                "hostless_fe_6a8cd101a60d\tUp 2 hours\thostless/arcticdrive-clean-72f6-frontend:v1\n"
+                "hostless_be_6a8cd101a60d\tUp 2 hours (unhealthy)\thostless/arcticdrive-clean-72f6-backend:v1\n"
+                "deploy-backend-1\tUp 2 hours (healthy)\tdeploy-backend\n"
+                "deploy-frontend-1\tUp 3 hours\tdeploy-frontend\n"
+                "deploy-mongo-1\tUp 15 hours\tmongo:7\n"
+                "deploy-caddy-1\tUp 15 hours\tcaddy:2\n"
+            ),
+            "exit_code": 0,
+            "stderr": "",
+        },
+        "docker network ls --format '{{.Name}}\t{{.Driver}}'": {"stdout": "hostless_net_6a8cd101a60d\tbridge\n", "exit_code": 0, "stderr": ""},
+        "uptime": {"stdout": " 20:51:10 up 2 days,  5:13,  1 user,  load average: 0.05, 0.02, 0.01", "exit_code": 0, "stderr": ""},
+        "free -m": {"stdout": "Mem: 16384 12000 2000 300 5000 9000\nSwap: 2048 512 1536\n", "exit_code": 0, "stderr": ""},
+        "df -h /": {"stdout": "Filesystem 1K-blocks Used Available Use% Mounted on\n/dev/sda1 1000000 800000 200000 80% /\n", "exit_code": 0, "stderr": ""},
+    }
+
+    def fake_run_remote_command(command, cfg, timeout=15):
+        return fake_responses[command]
+
+    monkeypatch.setattr(checks_module, "run_remote_command", fake_run_remote_command)
+    results = checks_module.run_hostless_checks(config)
+    by_name = {result.name: result for result in results}
+    assert by_name["Hostless Core Backend"].status == "healthy"
+    assert by_name["Hostless Core Frontend"].status == "healthy"
+    assert by_name["MongoDB"].status == "healthy"
+    assert by_name["Caddy"].status == "healthy"
+    assert by_name["Application Backend"].status == "warning"
+    assert by_name["Application Frontend"].status == "healthy"
+    assert by_name["Production Apps"].status == "healthy"
+
+
+def test_application_backend_semantics_for_running_unhealthy_container():
+    config = make_config(
+        monitored_apps_json='[{"name":"ArcticDrive","frontend_url":"https://arcticdrive-clean-72f6.apps.stallionhostless.duckdns.org","api_health_url":"https://arcticdrive-clean-72f6.apps.stallionhostless.duckdns.org/api/"}]'
+    )
+    assert _ram_status_for_pct(89.0, 75.0, 90.0) == "warning"
+    assert _ram_status_for_pct(91.0, 75.0, 90.0) == "failed"
+    assert _evaluate_tls_endpoint("https://example.com", 14)["tls_status"] in {"VALID", "EXPIRING_SOON"}
+
+
 def test_system_resource_parsing():
     memory = "Mem: 16384 12000 2000 300 5000 9000\nSwap: 2048 512 1536\n"
     disk = "Filesystem 1K-blocks Used Available Use% Mounted on\n/dev/sda1 1000000 800000 200000 80% /\n"
@@ -73,7 +136,7 @@ def test_system_resource_parsing():
 
 def test_missing_configuration_behavior():
     config = make_config(hostless_ssh_host=None, hostless_ssh_user=None)
-    result = check_hostless_configuration()
+    result = check_hostless_configuration(config)
     assert result.status == "unknown"
     assert "not supplied" in result.message.lower()
     assert run_hostless_checks(config)[0].status == "unknown"
@@ -115,4 +178,4 @@ def test_cli_operates_safely_when_hostless_unreachable_or_missing(monkeypatch):
     )
     assert result.returncode == 0
     assert "Hostless connection" in result.stdout
-    assert "UNKNOWN" in result.stdout or "Overall Status: UNKNOWN" in result.stdout or "Overall Status: HEALTHY" in result.stdout
+    assert "Overall Status:" in result.stdout

@@ -134,12 +134,21 @@ def parse_docker_ps(raw_stdout: str) -> list[dict[str, str]]:
         if not line.strip():
             continue
         parts = [part.strip() for part in line.split("\t")]
-        if len(parts) >= 4:
+        if len(parts) >= 3:
+            name = parts[0]
+            status = parts[1]
+            health = ""
+            image = ""
+            if len(parts) >= 4:
+                health = parts[2]
+                image = parts[3]
+            else:
+                image = parts[2]
             rows.append({
-                "name": parts[0],
-                "status": parts[1],
-                "health": parts[2],
-                "image": parts[3],
+                "name": name,
+                "status": status,
+                "health": health,
+                "image": image,
             })
     return rows
 
@@ -175,6 +184,23 @@ def parse_system_memory(raw_stdout: str) -> dict[str, float | int | str]:
     raise ValueError("Could not parse memory output.")
 
 
+def _human_size_to_mb(value: str) -> float:
+    value = (value or "").strip()
+    if not value:
+        return 0.0
+    suffix = value[-1].upper()
+    numeric = float(value[:-1]) if suffix.isalpha() else float(value)
+    if suffix == "K":
+        return numeric / 1024.0
+    if suffix == "M":
+        return numeric
+    if suffix == "G":
+        return numeric * 1024.0
+    if suffix == "T":
+        return numeric * 1024.0 * 1024.0
+    return numeric
+
+
 def parse_disk_usage(raw_stdout: str) -> dict[str, float | int | str]:
     lines = [line for line in raw_stdout.splitlines() if line.strip()]
     if len(lines) < 2:
@@ -182,11 +208,14 @@ def parse_disk_usage(raw_stdout: str) -> dict[str, float | int | str]:
     columns = lines[1].split()
     if len(columns) < 5:
         raise ValueError("Disk output missing required fields.")
+    total_mb = _human_size_to_mb(columns[1])
+    used_mb = _human_size_to_mb(columns[2])
+    available_mb = _human_size_to_mb(columns[3])
     return {
         "filesystem": columns[0],
-        "total_mb": int(float(columns[1]) * 1024 / 1024),
-        "used_mb": int(float(columns[2]) * 1024 / 1024),
-        "available_mb": int(float(columns[3]) * 1024 / 1024),
+        "total_mb": int(total_mb),
+        "used_mb": int(used_mb),
+        "available_mb": int(available_mb),
         "used_percent": columns[4],
     }
 

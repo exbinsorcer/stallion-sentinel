@@ -10,6 +10,24 @@ from typing import Any
 DEFAULT_ENVIRONMENT = "development"
 
 
+def _load_env_file(project_root: Path) -> dict[str, str]:
+    env_path = project_root / ".env"
+    if not env_path.exists():
+        return {}
+    values: dict[str, str] = {}
+    for raw_line in env_path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in {'"', "'"}:
+            value = value[1:-1]
+        values[key] = value
+    return values
+
+
 @dataclass(frozen=True)
 class SentinelConfig:
     environment: str
@@ -32,14 +50,16 @@ class SentinelConfig:
     @classmethod
     def from_env(cls) -> "SentinelConfig":
         project_root = Path(__file__).resolve().parent.parent
-        hostless_ssh_host = os.getenv("HOSTLESS_SSH_HOST") or None
-        hostless_ssh_user = os.getenv("HOSTLESS_SSH_USER") or None
-        hostless_ssh_port = int(os.getenv("HOSTLESS_SSH_PORT", "22"))
-        hostless_ssh_key_path = os.getenv("HOSTLESS_SSH_KEY_PATH") or None
-        hostless_base_url = os.getenv("HOSTLESS_BASE_URL") or None
-        monitored_apps_json = os.getenv("SENTINEL_MONITORED_APPS_JSON") or None
+        env_values = _load_env_file(project_root)
+        env_values.update(os.environ)
+        hostless_ssh_host = env_values.get("HOSTLESS_SSH_HOST") or None
+        hostless_ssh_user = env_values.get("HOSTLESS_SSH_USER") or None
+        hostless_ssh_port = int(env_values.get("HOSTLESS_SSH_PORT", "22"))
+        hostless_ssh_key_path = env_values.get("HOSTLESS_SSH_KEY_PATH") or None
+        hostless_base_url = env_values.get("HOSTLESS_BASE_URL") or None
+        monitored_apps_json = env_values.get("SENTINEL_MONITORED_APPS_JSON") or None
         return cls(
-            environment=os.getenv("SENTINEL_ENVIRONMENT", DEFAULT_ENVIRONMENT),
+            environment=env_values.get("SENTINEL_ENVIRONMENT", DEFAULT_ENVIRONMENT),
             project_root=project_root,
             runtime_dir=project_root / ".runtime",
             runs_dir=project_root / ".runtime" / "runs",
@@ -50,10 +70,10 @@ class SentinelConfig:
             hostless_ssh_key_path=hostless_ssh_key_path,
             hostless_base_url=hostless_base_url,
             monitored_apps_json=monitored_apps_json,
-            ram_warning_threshold_pct=float(os.getenv("SENTINEL_RAM_WARNING_THRESHOLD", "75")),
-            ram_failed_threshold_pct=float(os.getenv("SENTINEL_RAM_FAILED_THRESHOLD", "90")),
-            disk_warning_threshold_pct=float(os.getenv("SENTINEL_DISK_WARNING_THRESHOLD", "75")),
-            disk_failed_threshold_pct=float(os.getenv("SENTINEL_DISK_FAILED_THRESHOLD", "90")),
+            ram_warning_threshold_pct=float(env_values.get("SENTINEL_RAM_WARNING_THRESHOLD", "75")),
+            ram_failed_threshold_pct=float(env_values.get("SENTINEL_RAM_FAILED_THRESHOLD", "90")),
+            disk_warning_threshold_pct=float(env_values.get("SENTINEL_DISK_WARNING_THRESHOLD", "75")),
+            disk_failed_threshold_pct=float(env_values.get("SENTINEL_DISK_FAILED_THRESHOLD", "90")),
             core_container_names=(
                 "deploy-backend-1",
                 "deploy-frontend-1",
