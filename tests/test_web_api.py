@@ -75,3 +75,115 @@ def test_refresh_endpoint_is_read_only_and_safe(monkeypatch):
 def test_invalid_request_and_app_ids_return_404():
     assert client.get("/api/apps/missing-app").status_code == 404
     assert client.get("/api/change-requests/NOPE").status_code == 404
+
+
+def test_apps_endpoint_exposes_docker_health_and_network_distinct_from_process_state(monkeypatch):
+    import sentinel.web.api as api_module
+
+    fake_run = {
+        "checks": [
+            {
+                "checked_at": "2026-08-25T00:00:00+00:00",
+                "evidence": {
+                    "applications": [
+                        {
+                            "app_id": "sample-app",
+                            "friendly_name": "Sample App",
+                            "overall_status": "warning",
+                            "backend_container": "hostless_be_sample",
+                            "frontend_container": "hostless_fe_sample",
+                            "backend_state": "Up 4 hours (unhealthy)",
+                            "frontend_state": "Up 4 hours",
+                            "backend_docker_health": "unhealthy",
+                            "frontend_docker_health": "not_configured",
+                            "backend_http_health": "unknown",
+                            "frontend_http_health": "healthy",
+                            "network": "hostless_net_sample",
+                        }
+                    ]
+                },
+            }
+        ]
+    }
+    monkeypatch.setattr(api_module, "load_latest_run", lambda project_root=None: fake_run)
+
+    response = client.get("/api/apps")
+    assert response.status_code == 200
+    apps = response.json()
+    assert len(apps) == 1
+    app = apps[0]
+    assert app["backend_state"] == "Up 4 hours (unhealthy)"
+    assert app["backend_docker_health"] == "unhealthy"
+    assert app["frontend_docker_health"] == "not_configured"
+    assert app["network"] == "hostless_net_sample"
+
+
+def test_apps_endpoint_does_not_double_count_when_raw_discovery_check_also_present(monkeypatch):
+    import sentinel.web.api as api_module
+
+    fake_run = {
+        "checks": [
+            {
+                "checked_at": "2026-08-25T00:00:00+00:00",
+                "evidence": {
+                    "applications": [
+                        {
+                            "app_id": "sample-app",
+                            "friendly_name": "Sample App",
+                            "overall_status": "warning",
+                            "backend_state": "Up 4 hours (unhealthy)",
+                            "backend_docker_health": "unhealthy",
+                        }
+                    ]
+                },
+            },
+            {
+                "checked_at": "2026-08-25T00:00:00+00:00",
+                "evidence": {
+                    "apps": [
+                        {
+                            "app_id": "sample-app",
+                            "running_state": "Up 4 hours (unhealthy)",
+                        }
+                    ]
+                },
+            },
+        ]
+    }
+    monkeypatch.setattr(api_module, "load_latest_run", lambda project_root=None: fake_run)
+
+    response = client.get("/api/apps")
+    assert response.status_code == 200
+    apps = response.json()
+    assert len(apps) == 1
+    assert apps[0]["id"] == "sample-app"
+
+
+def test_status_summary_does_not_double_count_applications(monkeypatch):
+    import sentinel.web.service as service
+
+    fake_run = {
+        "overall_status": "warning",
+        "completed_at": "2026-08-25T00:00:00+00:00",
+        "run_id": "SEN-TEST",
+        "checks": [
+            {
+                "name": "Application Map",
+                "category": "hostless",
+                "evidence": {"applications": [{"app_id": "sample-app", "overall_status": "warning"}]},
+            },
+            {
+                "name": "Production Apps",
+                "category": "hostless",
+                "evidence": {"apps": [{"app_id": "sample-app", "running_state": "Up 4 hours"}]},
+            },
+        ],
+        "findings": [],
+    }
+    monkeypatch.setattr(service, "load_latest_run", lambda project_root=None: fake_run)
+
+    response = client.get("/api/status")
+    assert response.status_code == 200
+    payload = response.json()
+    assert len(payload["applications"]) == 1
+    assert payload["applications"][0]["app_id"] == "sample-app"
