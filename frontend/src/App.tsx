@@ -1,82 +1,39 @@
-import { useEffect, useMemo, useState } from 'react'
+import { Fragment, useEffect, useMemo, useState } from 'react'
+import './design/tokens.css'
 import './App.css'
+import {
+  StatusBadge,
+  StatusMark,
+  ViewModeToggle,
+  MachinePanel,
+  SectionLabel,
+  MetricBlock,
+  ResourceMeter,
+  DataRow,
+  PermissionTag,
+  EvidenceBlock,
+  EmptyState,
+  ErrorState,
+  LoadingState,
+  HeartbeatWave,
+  SystemNode,
+  Connector,
+  ExplainPanel,
+  MachineTable,
+  InfoTip,
+} from './components/Machine'
 
-type ViewMode = 'simple' | 'technical'
-type NavPage = 'overview' | 'hostless' | 'applications' | 'change-requests' | 'findings' | 'activity' | 'documentation' | 'settings'
-type Severity = 'critical' | 'high' | 'warning' | 'info'
-type StatusValue = 'healthy' | 'warning' | 'failed' | 'unknown'
-
-type StatusSummary = {
-  overall_status?: string
-  summary?: string
-  hostless_configured?: boolean
-  core_services?: Array<{ name?: string; status?: string; message?: string; evidence?: Record<string, unknown> }>
-  applications?: Array<Record<string, unknown>>
-  open_change_requests?: number
-  active_findings?: number
-  last_checked?: string | null
-  last_run_id?: string | null
-}
-
-type ChangeRequest = {
-  request_id?: string
-  title?: string
-  severity?: string
-  status?: string
-  approval_status?: string
-  required_permission_level?: string
-  simple_explanation?: string
-  description?: string
-  verified_condition?: string
-  verified_root_cause?: string
-  evidence?: Array<Record<string, unknown>> | Record<string, unknown>
-}
-
-type Finding = {
-  finding_id?: string
-  title?: string
-  severity?: string
-  status?: string
-  description?: string
-  affected_component?: string
-  evidence?: Record<string, unknown>
-  related_run?: string
-  related_change_request?: string
-}
-
-type ActivityItem = {
-  time?: string
-  type?: string
-  status?: string
-  message?: string
-  details?: Record<string, unknown>
-}
-
-type AppItem = {
-  id?: string
-  friendly_name?: string
-  overall_status?: string
-  backend_container?: string
-  frontend_container?: string
-  backend_state?: string
-  frontend_state?: string
-  backend_http_health?: string
-  frontend_http_health?: string
-  tls_status?: string
-  last_checked?: string
-}
-
-type PublicSettings = {
-  mode?: string
-  hostless_configured?: boolean
-  hostless_ssh_host?: string
-  hostless_ssh_user?: string
-  ssh_key_configured?: boolean
-  last_successful_ssh_observation?: string
-  auto_refresh?: boolean
-  refresh_interval_seconds?: number
-  view_preference?: string
-}
+export { StatusBadge, ViewModeToggle, ResourceMeter } from './components/Machine'
+import type { ActivityItem, AppItem, ChangeRequest, Finding, NavPage, PublicSettings, StatusSummary, ViewMode } from './lib/types'
+import {
+  categoryCopy,
+  DOCS_CATALOG,
+  humanize,
+  permissionCopy,
+  prettyTime,
+  sortStatus,
+  statusLabel,
+} from './lib/format'
 
 const navItems: Array<{ key: NavPage; label: string }> = [
   { key: 'overview', label: 'Overview' },
@@ -89,184 +46,129 @@ const navItems: Array<{ key: NavPage; label: string }> = [
   { key: 'settings', label: 'Settings' },
 ]
 
-const docsCatalog = [
-  { group: 'internal', label: 'Internal', file: 'README.md' },
-  { group: 'ai', label: 'AI Context', file: 'SYSTEM_CONTEXT.md' },
-  { group: 'public', label: 'Public', file: 'README.md' },
+const SEVERITY_RANK: Record<string, number> = { critical: 0, high: 1, medium: 2, warning: 2, low: 3, info: 3 }
+const severityRank = (severity?: string) => SEVERITY_RANK[String(severity ?? '').toLowerCase()] ?? 4
+
+type CheckRecord = { name?: string; status?: string; message?: string; evidence?: Record<string, unknown> }
+
+const findCheck = (checks: CheckRecord[], matcher: RegExp) => checks.find((item) => matcher.test(item.name ?? ''))
+
+const SYSTEM_MATRIX: Array<{ label: string; match: RegExp; simple: string; why: string; glossaryTerm: string }> = [
+  {
+    label: 'DOCKER',
+    match: /^docker engine$/i,
+    simple: 'Runs each hosted application inside its own isolated container.',
+    why: 'If Docker is unreachable, Sentinel cannot verify any container state.',
+    glossaryTerm: 'Docker',
+  },
+  {
+    label: 'CORE BACKEND',
+    match: /^hostless core backend$/i,
+    simple: 'The Hostless platform backend that powers the operator dashboard and APIs.',
+    why: 'If this is down, the Hostless platform itself may be unusable.',
+    glossaryTerm: 'Backend',
+  },
+  {
+    label: 'CORE FRONTEND',
+    match: /^hostless core frontend$/i,
+    simple: 'The interactive Hostless operator dashboard.',
+    why: 'A frontend outage can block operational visibility even if other services keep running.',
+    glossaryTerm: 'Frontend',
+  },
+  {
+    label: 'MONGODB',
+    match: /^mongodb$/i,
+    simple: 'Stores platform and application data.',
+    why: 'Without it, applications relying on the database cannot read or write data.',
+    glossaryTerm: 'MongoDB',
+  },
+  {
+    label: 'CADDY',
+    match: /^caddy$/i,
+    simple: 'Routes visitors to hosted applications.',
+    why: 'Without it, sites cannot receive traffic.',
+    glossaryTerm: 'Caddy',
+  },
+  {
+    label: 'PLATFORM TLS',
+    match: /^hostless platform tls$/i,
+    simple: 'Secures the main Hostless domain for visitors.',
+    why: 'An invalid certificate causes browser security warnings for every visitor.',
+    glossaryTerm: 'TLS Certificate',
+  },
 ]
 
-const normalizeStatus = (value?: string): StatusValue => {
-  const status = String(value ?? 'unknown').toLowerCase()
-  if (status === 'healthy' || status === 'warning' || status === 'failed') {
-    return status
-  }
-  return 'unknown'
-}
-
-const statusLabel = (status?: string, fallback = 'UNKNOWN') => {
-  const value = normalizeStatus(status)
-  switch (value) {
-    case 'healthy':
-      return 'HEALTHY'
-    case 'warning':
-      return 'WARNING'
-    case 'failed':
-      return 'FAILED'
-    default:
-      return fallback
-  }
-}
-
-const formatSimpleStatus = (status?: string) => {
-  const value = normalizeStatus(status)
-  return value === 'unknown' ? 'UNKNOWN' : value.toUpperCase()
-}
-
-const clampPercent = (value: number, min: number, max: number) => Math.min(Math.max(value, min), max)
-
-const prettyTime = (value?: string | null) => {
-  if (!value) return 'NO DATA'
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) return 'NO DATA'
-  return date.toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' })
-}
-
-export function StatusBadge({ status, label }: { status?: string; label?: string }) {
-  const tone = normalizeStatus(status)
-  return <span className={`status-badge tone-${tone}`}>{label ?? statusLabel(status, 'UNKNOWN')}</span>
-}
-
-export function ViewModeToggle({ value, onChange }: { value: ViewMode; onChange: (next: ViewMode) => void }) {
+export function ChangeRequestCard({
+  request,
+  mode,
+  onView,
+}: {
+  request: ChangeRequest
+  mode: ViewMode
+  onView?: (id: string) => void
+}) {
   return (
-    <div className="toggle-group" aria-label="simple or technical view">
-      <button type="button" className={value === 'simple' ? 'toggle-button active' : 'toggle-button'} onClick={() => onChange('simple')}>
-        SIMPLE
-      </button>
-      <button type="button" className={value === 'technical' ? 'toggle-button active' : 'toggle-button'} onClick={() => onChange('technical')}>
-        TECHNICAL
-      </button>
-    </div>
-  )
-}
-
-export function SimpleExplanation({ title, simple, why, technical, mode }: { title: string; simple: string; why: string; technical?: string; mode: ViewMode }) {
-  return (
-    <div className="explanation-box">
-      <h4>{title}</h4>
-      <p><strong>Simple:</strong> {simple}</p>
-      <p><strong>Why it matters:</strong> {why}</p>
-      {mode === 'technical' && technical && <p><strong>Technical:</strong> {technical}</p>}
-    </div>
-  )
-}
-
-export function MetricCard({ label, value, status, detail }: { label: string; value: string; status?: string; detail?: string }) {
-  return (
-    <div className="metric-card panel-card">
-      <div className="metric-label-row">
-        <span>{label}</span>
-        {status && <StatusBadge status={status} label={statusLabel(status, 'UNKNOWN')} />}
+    <div className="sen-card">
+      <div className="sen-card-row">
+        <span className="sen-tech-value">{request.request_id ?? 'UNKNOWN'}</span>
+        <StatusBadge status={request.approval_status ?? 'unknown'} label={humanize(request.approval_status, 'NOT APPROVED')} />
       </div>
-      <div className="metric-value">{value}</div>
-      {detail && <div className="metric-detail">{detail}</div>}
-    </div>
-  )
-}
-
-export function ResourceMeter({ label, value, status, detail }: { label: string; value: number; status: string; detail?: string }) {
-  const clamped = clampPercent(value, 0, 100)
-  return (
-    <div className="resource-meter panel-card">
-      <div className="resource-header">
-        <span>{label}</span>
-        <StatusBadge status={status} label={statusLabel(status, 'UNKNOWN')} />
+      <h3 className="sen-card-title">{request.title ?? 'Change request'}</h3>
+      <div className="sen-chip-row">
+        <span className="sen-chip">{humanize(request.severity)}</span>
+        <span className="sen-chip">{humanize(request.status, 'DRAFT')}</span>
+        <PermissionTag level={request.required_permission_level} />
       </div>
-      <div className="meter-track">
-        <div className={`meter-fill tone-${normalizeStatus(status)}`} style={{ width: `${clamped}%` }} />
-      </div>
-      <div className="resource-meta">{Math.round(clamped)}% {detail ? `• ${detail}` : ''}</div>
-    </div>
-  )
-}
-
-export function HealthCard({ name, status, simple, why, technical, mode }: { name: string; status?: string; simple: string; why: string; technical?: string; mode: ViewMode }) {
-  return (
-    <div className="health-card panel-card">
-      <div className="health-card-header">
-        <h3>{name}</h3>
-        <StatusBadge status={status} label={statusLabel(status, 'UNKNOWN')} />
-      </div>
-      <p className="simple-line">{simple}</p>
-      <p className="why-line">{why}</p>
-      {mode === 'technical' && technical && <pre className="technical-details">{technical}</pre>}
-    </div>
-  )
-}
-
-export function ChangeRequestCard({ request, mode }: { request: ChangeRequest; mode: ViewMode }) {
-  return (
-    <div className="request-card panel-card">
-      <div className="card-row-between">
-        <strong>{request.request_id ?? 'UNKNOWN'}</strong>
-        <StatusBadge status={request.approval_status ?? 'unknown'} label={(request.approval_status ?? 'NOT_APPROVED').replace('_', ' ')} />
-      </div>
-      <h3>{request.title ?? 'Change request'}</h3>
-      <div className="meta-row">
-        <span className="chip">{(request.severity ?? 'UNKNOWN').toUpperCase()}</span>
-        <span className="chip">{(request.status ?? 'DRAFT').toUpperCase()}</span>
-        <span className="chip">{(request.required_permission_level ?? 'OBSERVE').toUpperCase()}</span>
-      </div>
-      <p>{request.description ?? request.simple_explanation ?? 'No description provided.'}</p>
+      <p className="sen-card-text">{request.description ?? request.simple_explanation ?? 'No description provided.'}</p>
       {mode === 'technical' && (
-        <div className="technical-details">
-          <div><strong>Verified condition:</strong> {request.verified_condition ?? 'Not known yet'}</div>
-          <div><strong>Verified root cause:</strong> {request.verified_root_cause ?? 'Root cause not known yet'}</div>
-          <div><strong>Required permission:</strong> {request.required_permission_level ?? 'OBSERVE'}</div>
-          <div><strong>Approval status:</strong> {request.approval_status ?? 'NOT_APPROVED'}</div>
+        <div className="sen-card-tech">
+          <DataRow label="Verified condition" value={request.verified_condition ?? 'NOT KNOWN YET'} mono={false} />
+          <DataRow label="Verified root cause" value={request.verified_root_cause ?? 'UNKNOWN'} mono={false} />
+          <DataRow label="Required permission" value={humanize(request.required_permission_level, 'OBSERVE')} />
+          <DataRow label="Approval status" value={humanize(request.approval_status, 'NOT APPROVED')} />
         </div>
       )}
-      <button type="button" className="secondary-button">VIEW REQUEST</button>
+      <button type="button" className="sen-btn secondary" onClick={() => onView?.(request.request_id ?? '')}>
+        VIEW REQUEST
+      </button>
     </div>
   )
 }
 
 export function ApplicationCard({ app, mode }: { app: AppItem; mode: ViewMode }) {
   return (
-    <div className="application-card panel-card">
-      <div className="card-row-between">
-        <h3>{app.friendly_name ?? app.id ?? 'Application'}</h3>
-        <StatusBadge status={app.overall_status} label={statusLabel(app.overall_status, 'UNKNOWN')} />
+    <div className="sen-card">
+      <div className="sen-card-row">
+        <h3 className="sen-card-title">{app.friendly_name ?? app.id ?? 'Application'}</h3>
+        <StatusMark status={app.overall_status} />
       </div>
-      <div className="meta-row">
-        <span>Frontend: {app.frontend_state ?? 'UNKNOWN'}</span>
-        <span>Backend: {app.backend_state ?? 'UNKNOWN'}</span>
+      <div className="sen-chip-row">
+        <span className="sen-chip">FRONTEND {humanize(app.frontend_state, 'UNKNOWN')}</span>
+        <span className="sen-chip">BACKEND {humanize(app.backend_state, 'UNKNOWN')}</span>
       </div>
-      <div className="meta-row">
-        <span>Docker health: {app.backend_http_health ?? 'UNKNOWN'}</span>
-        <span>TLS: {app.tls_status ?? 'UNKNOWN'}</span>
+      <div className="sen-chip-row">
+        <span className="sen-chip">DOCKER HEALTH {humanize(app.backend_docker_health, 'UNKNOWN')}</span>
+        <span className="sen-chip">TLS {humanize(app.tls_status, 'UNKNOWN')}</span>
       </div>
       {mode === 'technical' && (
-        <div className="technical-details">
-          <div>Frontend container: {app.frontend_container ?? 'UNKNOWN'}</div>
-          <div>Backend container: {app.backend_container ?? 'UNKNOWN'}</div>
-          <div>Backend HTTP: {app.backend_http_health ?? 'UNKNOWN'}</div>
-          <div>Frontend HTTP: {app.frontend_http_health ?? 'UNKNOWN'}</div>
-          <div>Last observation: {prettyTime(app.last_checked)}</div>
+        <div className="sen-card-tech">
+          <DataRow label="Frontend container" value={app.frontend_container ?? 'UNKNOWN'} />
+          <DataRow label="Backend container" value={app.backend_container ?? 'UNKNOWN'} />
+          <DataRow label="Backend HTTP" value={humanize(app.backend_http_health, 'UNKNOWN')} />
+          <DataRow label="Frontend HTTP" value={humanize(app.frontend_http_health, 'UNKNOWN')} />
+          <DataRow label="Network" value={app.network ?? 'UNKNOWN'} />
+          <DataRow label="Last observation" value={prettyTime(app.last_checked)} />
         </div>
       )}
     </div>
   )
 }
 
-const sortStatus = (status?: string) => {
-  const order = { failed: 0, warning: 1, healthy: 2, unknown: 3 }
-  return order[normalizeStatus(status)] ?? 3
-}
-
 function App() {
   const [viewMode, setViewMode] = useState<ViewMode>('simple')
   const [activePage, setActivePage] = useState<NavPage>('overview')
   const [status, setStatus] = useState<StatusSummary | null>(null)
+  const [latestRun, setLatestRun] = useState<{ checks?: CheckRecord[] } | null>(null)
   const [apps, setApps] = useState<AppItem[]>([])
   const [changeRequests, setChangeRequests] = useState<ChangeRequest[]>([])
   const [findings, setFindings] = useState<Finding[]>([])
@@ -277,12 +179,17 @@ function App() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [isRefreshing, setIsRefreshing] = useState(false)
+  const [justRefreshed, setJustRefreshed] = useState(false)
+  const [selectedAppId, setSelectedAppId] = useState<string | null>(null)
+  const [selectedRequestId, setSelectedRequestId] = useState<string | null>(null)
+  const [expandedFindingId, setExpandedFindingId] = useState<string | null>(null)
 
   const loadDashboardData = async () => {
     try {
       setLoading(true)
-      const [statusData, appData, requestData, findingData, activityData, settingsData] = await Promise.all([
+      const [statusData, runData, appData, requestData, findingData, activityData, settingsData] = await Promise.all([
         fetch('/api/status').then((res) => (res.ok ? res.json() : {})),
+        fetch('/api/heartbeat/latest').then((res) => (res.ok ? res.json() : null)),
         fetch('/api/apps').then((res) => (res.ok ? res.json() : [])),
         fetch('/api/change-requests').then((res) => (res.ok ? res.json() : [])),
         fetch('/api/findings').then((res) => (res.ok ? res.json() : [])),
@@ -290,6 +197,7 @@ function App() {
         fetch('/api/settings/public').then((res) => (res.ok ? res.json() : {})),
       ])
       setStatus(statusData as StatusSummary)
+      setLatestRun(runData as { checks?: CheckRecord[] } | null)
       setApps((appData as AppItem[]) ?? [])
       setChangeRequests((requestData as ChangeRequest[]) ?? [])
       setFindings((findingData as Finding[]) ?? [])
@@ -341,6 +249,8 @@ function App() {
         throw new Error('Heartbeat refresh failed')
       }
       await loadDashboardData()
+      setJustRefreshed(true)
+      setTimeout(() => setJustRefreshed(false), 600)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Heartbeat refresh failed.')
     } finally {
@@ -350,225 +260,588 @@ function App() {
 
   const overallStatusValue = status?.overall_status ?? 'unknown'
   const overallLabel = statusLabel(overallStatusValue, 'UNKNOWN')
-  const coreServices = [...((status?.core_services ?? []) as Array<{ name?: string; status?: string; message?: string; evidence?: Record<string, unknown> }>)].sort((a, b) => sortStatus(a.status) - sortStatus(b.status))
+  const coreServices = [...((status?.core_services ?? []) as CheckRecord[])].sort((a, b) => sortStatus(a.status) - sortStatus(b.status))
   const orderedApps = [...apps].sort((a, b) => sortStatus(a.overall_status) - sortStatus(b.overall_status))
+  const allChecks = latestRun?.checks ?? []
 
-  const summaryText = useMemo(() => {
-    const base = status?.summary || 'No heartbeat has been recorded yet.'
-    return base
-  }, [status])
+  const ramCheck = coreServices.find((item) => (item.name ?? '').toLowerCase() === 'ram')
+  const diskCheck = coreServices.find((item) => (item.name ?? '').toLowerCase() === 'disk')
+  const ramPercent = Number(ramCheck?.evidence?.used_percent ?? NaN)
+  const diskPercent = Number(diskCheck?.evidence?.used_percent ?? NaN)
 
-  const isHealthy = overallStatusValue === 'healthy'
-  const isWarning = overallStatusValue === 'warning'
+  const summaryText = useMemo(() => status?.summary || 'No heartbeat has been recorded yet.', [status])
 
-  const renderOverview = () => (
-    <div className="page-stack">
-      <div className="hero-card panel-card">
-        <div className="hero-header">
-          <div>
-            <p className="eyebrow">STALLION SENTINEL</p>
-            <h1>Hostless reliability and operations</h1>
-          </div>
-          <div className="hero-actions">
-            <StatusBadge status={overallStatusValue} label={overallLabel} />
-            <button type="button" className="primary-button" onClick={refreshHeartbeat} disabled={isRefreshing}>
-              {isRefreshing ? 'REFRESHING...' : 'REFRESH HEARTBEAT'}
+  const orderedFindings = [...findings].sort((a, b) => severityRank(a.severity) - severityRank(b.severity))
+  const findingTime = latestRun ? prettyTime(status?.last_checked) : 'NO DATA'
+
+  const selectedApp = apps.find((item) => item.id === selectedAppId) ?? null
+  const relatedFindingsForApp = (app: AppItem) =>
+    findings.filter((finding) => {
+      const haystack = `${finding.affected_component ?? ''} ${finding.description ?? ''} ${finding.title ?? ''}`.toLowerCase()
+      return Boolean(app.id) && haystack.includes(String(app.id).toLowerCase())
+    })
+  const relatedRequestsForApp = (app: AppItem) =>
+    changeRequests.filter((request) => {
+      const haystack = `${request.affected_component ?? ''} ${request.description ?? ''} ${request.title ?? ''}`.toLowerCase()
+      return Boolean(app.id) && haystack.includes(String(app.id).toLowerCase())
+    })
+
+  const selectedRequest = changeRequests.find((item) => item.request_id === selectedRequestId) ?? null
+
+  const relatedRequestForFinding = (finding: Finding) =>
+    changeRequests.find((request) => (request.related_findings ?? []).includes(finding.finding_id ?? ''))
+
+  const openRequest = (id: string) => {
+    setSelectedRequestId(id)
+    setActivePage('change-requests')
+  }
+
+  const renderOverview = () => {
+    const openCount = changeRequests.filter((item) => (item.approval_status ?? 'NOT_APPROVED') !== 'APPROVED').length
+    return (
+      <div className="page-stack">
+        <MachinePanel
+          title="Hostless heartbeat"
+          actions={
+            <button type="button" className="sen-btn primary" onClick={refreshHeartbeat} disabled={isRefreshing}>
+              {isRefreshing ? 'REFRESHING…' : 'REFRESH HEARTBEAT'}
             </button>
+          }
+        >
+          <div className="heartbeat-grid">
+            <div className="heartbeat-facts">
+              <StatusMark status={overallStatusValue} label={overallLabel} />
+              <DataRow label="Last check" value={prettyTime(status?.last_checked)} />
+              <DataRow label="Last run ID" value={status?.last_run_id ?? 'NO DATA'} />
+              <DataRow label="Core services" value={String(coreServices.length)} />
+              <DataRow label="Apps monitored" value={String(apps.length)} />
+              <DataRow label="Active findings" value={String(status?.active_findings ?? findings.length)} />
+              <DataRow label="Open change requests" value={String(status?.open_change_requests ?? openCount)} />
+            </div>
+            <HeartbeatWave status={overallStatusValue} active={justRefreshed} />
           </div>
-        </div>
-        <div className="hero-metrics">
-          <MetricCard label="Observation mode" value={settings?.mode ?? 'OBSERVATION'} status="healthy" detail="No automatic repairs" />
-          <MetricCard label="Last observation" value={prettyTime(status?.last_checked)} status={overallStatusValue} detail={status?.last_run_id ?? 'NO DATA'} />
-          <MetricCard label="Core services" value={String(status?.core_services?.length ?? 0)} status={coreServices.some((item) => normalizeStatus(item.status) === 'failed') ? 'failed' : 'healthy'} detail="Core infra checks" />
-          <MetricCard label="Applications" value={String(apps.length)} status={apps.some((app) => normalizeStatus(app.overall_status) === 'warning' || normalizeStatus(app.overall_status) === 'failed') ? 'warning' : 'healthy'} detail="Monitored services" />
-          <MetricCard label="Active findings" value={String(status?.active_findings ?? findings.length)} status={findings.some((item) => item.severity === 'high' || item.severity === 'critical') ? 'warning' : 'healthy'} detail="Open findings" />
-          <MetricCard label="Open changes" value={String(status?.open_change_requests ?? changeRequests.length)} status={changeRequests.some((req) => (req.approval_status ?? 'NOT_APPROVED') !== 'APPROVED') ? 'warning' : 'healthy'} detail="Awaiting review" />
-        </div>
-      </div>
+        </MachinePanel>
 
-      <div className="overview-grid">
-        <div className="panel-card">
-          <h2>Current deterministic summary</h2>
-          <p className="summary-text">{summaryText}</p>
-        </div>
-        <div className="panel-card">
-          <h2>Hostless summary</h2>
-          <div className="stack-list">
-            {coreServices.length ? coreServices.map((service) => (
-              <div key={service.name ?? 'service'} className="list-row">
-                <span>{service.name ?? 'Unknown service'}</span>
-                <StatusBadge status={service.status} label={statusLabel(service.status, 'UNKNOWN')} />
-              </div>
-            )) : <div className="empty-state-inline">No core service data available.</div>}
+        <MachinePanel title="Owner summary" dense>
+          <div className="sen-summary-text">{summaryText}</div>
+        </MachinePanel>
+
+        <MachinePanel title="System matrix">
+          <div className="matrix-grid">
+            {SYSTEM_MATRIX.map((item) => {
+              const service = findCheck(coreServices, item.match)
+              return (
+                <ExplainPanel
+                  key={item.label}
+                  term={item.label}
+                  status={service?.status}
+                  simple={item.simple}
+                  why={item.why}
+                  technical={service?.evidence ?? 'No technical details available.'}
+                  mode={viewMode}
+                  glossaryTerm={item.glossaryTerm}
+                />
+              )
+            })}
           </div>
-        </div>
-      </div>
+        </MachinePanel>
 
-      <div className="panel-card">
-        <h2>Core health</h2>
-        <div className="card-grid">
-          {coreServices.length ? coreServices.map((service) => (
-            <HealthCard
-              key={service.name ?? 'service'}
-              name={service.name ?? 'Unknown service'}
-              status={service.status}
-              simple={service.message ?? 'No simple explanation available.'}
-              why={service.evidence ? 'Stamped with current runtime evidence.' : 'Evidence is unavailable or not configured.'}
-              technical={service.evidence ? JSON.stringify(service.evidence, null, 2) : 'No technical details available.'}
-              mode={viewMode}
+        <MachinePanel title="Resource matrix">
+          <div className="resource-grid">
+            <ResourceMeter label="CPU" value={0} status="unknown" unavailable detail="No CPU collector configured yet." />
+            <ResourceMeter
+              label="RAM"
+              value={Number.isFinite(ramPercent) ? ramPercent : 0}
+              status={ramCheck?.status ?? 'unknown'}
+              unavailable={!Number.isFinite(ramPercent)}
+              detail={ramCheck ? `Threshold: warn ${ramCheck.evidence?.warning_threshold_pct}% / fail ${ramCheck.evidence?.failed_threshold_pct}%` : undefined}
+              glossaryTerm="RAM"
             />
-          )) : <div className="empty-state-inline">No Hostless core services are currently mapped.</div>}
-        </div>
-      </div>
-    </div>
-  )
+            <ResourceMeter
+              label="DISK"
+              value={Number.isFinite(diskPercent) ? diskPercent : 0}
+              status={diskCheck?.status ?? 'unknown'}
+              unavailable={!Number.isFinite(diskPercent)}
+              detail={diskCheck ? `Filesystem: ${diskCheck.evidence?.filesystem ?? 'UNKNOWN'}` : undefined}
+              glossaryTerm="Disk"
+            />
+            <ResourceMeter label="UPTIME" value={0} status="unknown" unavailable detail="No uptime collector configured yet." />
+          </div>
+        </MachinePanel>
 
-  const renderHostless = () => (
-    <div className="page-stack">
-      <div className="panel-card">
-        <h2>Hostless infrastructure</h2>
-        <div className="card-grid two-up">
-          <HealthCard name="Docker" status={coreServices.find((item) => /docker/i.test(item.name ?? ''))?.status} simple="The local runtime is tracking Docker operations." why="Docker state is a foundational signal for app and platform health." technical={JSON.stringify(coreServices.find((item) => /docker/i.test(item.name ?? ''))?.evidence ?? { status: 'UNKNOWN' }, null, 2)} mode={viewMode} />
-          <HealthCard name="Platform TLS" status={coreServices.find((item) => /tls/i.test(item.name ?? ''))?.status} simple="The public-facing certificate should be valid." why="An expired certificate creates browser warnings and failed secure connections." technical={JSON.stringify(coreServices.find((item) => /tls/i.test(item.name ?? ''))?.evidence ?? { status: 'UNKNOWN' }, null, 2)} mode={viewMode} />
-          <HealthCard name="Hostless Core Backend" status={coreServices.find((item) => /backend/i.test(item.name ?? '') && !/application/i.test(item.name ?? ''))?.status} simple="Core backend is running autonomously for Hostless itself." why="The platform backend must stay healthy for app traffic and platform services." technical={JSON.stringify(coreServices.find((item) => /backend/i.test(item.name ?? '') && !/application/i.test(item.name ?? ''))?.evidence ?? { status: 'UNKNOWN' }, null, 2)} mode={viewMode} />
-          <HealthCard name="Hostless Core Frontend" status={coreServices.find((item) => /frontend/i.test(item.name ?? '') && !/application/i.test(item.name ?? ''))?.status} simple="The interactive Hostless frontend is available if the platform is healthy." why="A frontend outage can block operational visibility even when core services continue running." technical={JSON.stringify(coreServices.find((item) => /frontend/i.test(item.name ?? '') && !/application/i.test(item.name ?? ''))?.evidence ?? { status: 'UNKNOWN' }, null, 2)} mode={viewMode} />
-        </div>
-      </div>
+        <div className="two-col">
+          <MachinePanel title="Active issues">
+            {orderedFindings.length ? (
+              <div className="issue-list">
+                {orderedFindings.slice(0, 6).map((finding) => (
+                  <div key={finding.finding_id ?? finding.title} className="issue-row">
+                    <StatusMark status={finding.status} label={humanize(finding.severity, 'INFO')} />
+                    <div className="issue-body">
+                      <div className="issue-title">{finding.title ?? 'Finding'}</div>
+                      <div className="issue-meta">{finding.affected_component ?? 'Unknown component'}</div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <EmptyState message="No findings are available." />
+            )}
+          </MachinePanel>
 
-      <div className="panel-card">
-        <h2>System resources</h2>
-        <div className="resource-grid">
-          <ResourceMeter label="CPU" value={58} status={isHealthy ? 'healthy' : 'warning'} detail="Load observed" />
-          <ResourceMeter label="RAM" value={90.6} status={normalizeStatus('failed')} detail="Memory pressure" />
-          <ResourceMeter label="Disk" value={80} status={normalizeStatus('healthy')} detail="Usage within expected band" />
-          <MetricCard label="Uptime" value={status?.summary?.includes('days') ? '2 days' : 'UNKNOWN'} status={isHealthy ? 'healthy' : 'warning'} detail="System uptime" />
+          <MachinePanel title="Change requests summary">
+            {changeRequests.length ? (
+              <div className="card-stack">
+                {changeRequests.slice(0, 3).map((request) => (
+                  <ChangeRequestCard key={request.request_id} request={request} mode={viewMode} onView={openRequest} />
+                ))}
+              </div>
+            ) : (
+              <EmptyState message="No change requests are available." />
+            )}
+          </MachinePanel>
         </div>
       </div>
+    )
+  }
 
-      <div className="panel-card">
-        <h2>Known architecture relationships</h2>
-        <div className="architecture-map">
-          <div>Internet</div>
-          <div className="arrow">↓</div>
-          <div>Caddy</div>
-          <div className="arrow">↓</div>
-          <div>Application network</div>
-          <div className="arrow">↓</div>
-          <div>Frontend / Backend</div>
-          <div className="arrow">↓</div>
-          <div>Database</div>
-        </div>
+  const renderHostless = () => {
+    const publicUrlCheck = findCheck(allChecks, /^public hostless url$/i)
+    const networkCheck = findCheck(allChecks, /^core docker network$/i)
+    const backendCheck = findCheck(allChecks, /^application backend$/i)
+    const frontendCheck = findCheck(allChecks, /^application frontend$/i)
+    const mongoCheck = findCheck(coreServices, /^mongodb$/i)
+    const caddyCheck = findCheck(coreServices, /^caddy$/i)
+    const coreBackend = findCheck(coreServices, /^hostless core backend$/i)
+    const coreFrontend = findCheck(coreServices, /^hostless core frontend$/i)
+    const hostlessWorst = [coreBackend, coreFrontend, mongoCheck]
+      .map((item) => item?.status)
+      .sort((a, b) => sortStatus(a) - sortStatus(b))[0]
+
+    return (
+      <div className="page-stack">
+        <MachinePanel title="Known architecture relationships">
+          <div className="topology">
+            <SystemNode label="INTERNET" status={publicUrlCheck?.status} sub={publicUrlCheck ? undefined : 'NOT MONITORED'} />
+            <Connector />
+            <SystemNode label="CADDY" status={caddyCheck?.status} />
+            <Connector />
+            <SystemNode label="HOSTLESS CORE" status={hostlessWorst} sub="BACKEND · FRONTEND · MONGODB" />
+            <Connector />
+            <SystemNode label="APPLICATION NETWORK" status={networkCheck?.status} sub={networkCheck ? `${(networkCheck.evidence?.networks as unknown[] | undefined)?.length ?? 0} NETWORK(S)` : undefined} />
+            <Connector />
+            <div className="sen-node-branch">
+              <SystemNode label="FRONTEND" status={frontendCheck?.status} />
+              <SystemNode label="BACKEND" status={backendCheck?.status} />
+            </div>
+            <Connector />
+            <SystemNode label="DATABASE" status={mongoCheck?.status} sub="MONGODB" />
+          </div>
+          <p className="sen-note">Only relationships confirmed by the latest Sentinel run are shown. Unmapped links display UNKNOWN.</p>
+        </MachinePanel>
+
+        <MachinePanel title="System matrix">
+          <div className="matrix-grid">
+            {SYSTEM_MATRIX.map((item) => {
+              const service = findCheck(coreServices, item.match)
+              return (
+                <ExplainPanel
+                  key={item.label}
+                  term={item.label}
+                  status={service?.status}
+                  simple={item.simple}
+                  why={item.why}
+                  technical={service?.evidence ?? 'No technical details available.'}
+                  mode={viewMode}
+                  glossaryTerm={item.glossaryTerm}
+                />
+              )
+            })}
+          </div>
+        </MachinePanel>
+
+        <MachinePanel title="System resources">
+          <div className="resource-grid">
+            <ResourceMeter label="CPU" value={0} status="unknown" unavailable detail="No CPU collector configured yet." />
+            <ResourceMeter
+              label="RAM"
+              value={Number.isFinite(ramPercent) ? ramPercent : 0}
+              status={ramCheck?.status ?? 'unknown'}
+              unavailable={!Number.isFinite(ramPercent)}
+              detail={ramCheck ? `${ramCheck.evidence?.used_mb ?? '?'} / ${ramCheck.evidence?.total_mb ?? '?'} MB` : undefined}
+              glossaryTerm="RAM"
+            />
+            <ResourceMeter
+              label="DISK"
+              value={Number.isFinite(diskPercent) ? diskPercent : 0}
+              status={diskCheck?.status ?? 'unknown'}
+              unavailable={!Number.isFinite(diskPercent)}
+              detail={diskCheck ? `${diskCheck.evidence?.used_mb ?? '?'} / ${diskCheck.evidence?.total_mb ?? '?'} MB` : undefined}
+              glossaryTerm="Disk"
+            />
+            <ResourceMeter label="UPTIME" value={0} status="unknown" unavailable detail="No uptime collector configured yet." />
+          </div>
+        </MachinePanel>
       </div>
-    </div>
-  )
+    )
+  }
 
   const renderApplications = () => (
     <div className="page-stack">
-      <div className="panel-card">
-        <h2>Applications</h2>
-        <div className="card-grid">
-          {orderedApps.length ? orderedApps.map((app) => <ApplicationCard key={app.id ?? app.friendly_name ?? 'app'} app={app} mode={viewMode} />) : <div className="empty-state-inline">No mapped applications are available.</div>}
-        </div>
-      </div>
+      <MachinePanel title="Applications">
+        {orderedApps.length ? (
+          <MachineTable columns={['NAME', 'APP ID', 'OVERALL', 'FRONTEND', 'BACKEND PROCESS', 'DOCKER HEALTH', 'HTTP HEALTH', 'TLS', 'NETWORK', 'LAST OBSERVATION']}>
+            {orderedApps.map((app, index) => (
+              <tr
+                key={`${app.id ?? 'app'}-${index}`}
+                className={`clickable${selectedAppId === app.id ? ' selected' : ''}`}
+                onClick={() => setSelectedAppId(app.id ?? null)}
+              >
+                <td>{app.friendly_name ?? app.id ?? 'Application'}</td>
+                <td className="mono">{app.id ?? 'UNKNOWN'}</td>
+                <td>
+                  <StatusMark status={app.overall_status} />
+                </td>
+                <td className="mono">{humanize(app.frontend_state, 'UNKNOWN')}</td>
+                <td className="mono">{humanize(app.backend_state, 'UNKNOWN')}</td>
+                <td className="mono">
+                  <div>BE {humanize(app.backend_docker_health, 'UNKNOWN')}</div>
+                  <div>FE {humanize(app.frontend_docker_health, 'UNKNOWN')}</div>
+                </td>
+                <td className="mono">
+                  <div>BE {humanize(app.backend_http_health, 'UNKNOWN')}</div>
+                  <div>FE {humanize(app.frontend_http_health, 'UNKNOWN')}</div>
+                </td>
+                <td className="mono">{humanize(app.tls_status, 'UNKNOWN')}</td>
+                <td className="mono">{app.network ?? 'UNKNOWN'}</td>
+                <td className="mono">{prettyTime(app.last_checked)}</td>
+              </tr>
+            ))}
+          </MachineTable>
+        ) : (
+          <EmptyState message="No mapped applications are available." />
+        )}
+      </MachinePanel>
+
+      {selectedApp && (
+        <MachinePanel
+          title={`Application detail — ${selectedApp.friendly_name ?? selectedApp.id}`}
+          actions={
+            <button type="button" className="sen-btn secondary" onClick={() => setSelectedAppId(null)}>
+              CLOSE
+            </button>
+          }
+        >
+          <div className="detail-grid">
+            <ApplicationCard app={selectedApp} mode={viewMode} />
+            <div className="detail-sections">
+              <div className="detail-section">
+                <SectionLabel>System</SectionLabel>
+                <DataRow label="App ID" value={selectedApp.id ?? 'UNKNOWN'} />
+                <DataRow label="Network" value={selectedApp.network ?? 'UNKNOWN'} />
+                <DataRow label="Last observation" value={prettyTime(selectedApp.last_checked)} />
+              </div>
+              <div className="detail-section">
+                <SectionLabel>Frontend</SectionLabel>
+                <DataRow label="Container" value={selectedApp.frontend_container ?? 'UNKNOWN'} />
+                <DataRow label="Process state" value={humanize(selectedApp.frontend_state, 'UNKNOWN')} />
+                <DataRow label="Docker health" value={humanize(selectedApp.frontend_docker_health, 'UNKNOWN')} />
+              </div>
+              <div className="detail-section">
+                <SectionLabel>Backend</SectionLabel>
+                <DataRow label="Container" value={selectedApp.backend_container ?? 'UNKNOWN'} />
+                <DataRow label="Process state" value={humanize(selectedApp.backend_state, 'UNKNOWN')} />
+                <DataRow label="Docker health" value={humanize(selectedApp.backend_docker_health, 'UNKNOWN')} />
+              </div>
+              <div className="detail-section">
+                <SectionLabel>Web health</SectionLabel>
+                <DataRow label="Backend HTTP" value={humanize(selectedApp.backend_http_health, 'UNKNOWN')} />
+                <DataRow label="Frontend HTTP" value={humanize(selectedApp.frontend_http_health, 'UNKNOWN')} />
+              </div>
+              <div className="detail-section">
+                <SectionLabel>TLS / Security</SectionLabel>
+                <DataRow label="TLS status" value={humanize(selectedApp.tls_status, 'UNKNOWN')} />
+              </div>
+              <div className="detail-section">
+                <SectionLabel>Findings</SectionLabel>
+                {relatedFindingsForApp(selectedApp).length ? (
+                  relatedFindingsForApp(selectedApp).map((finding) => (
+                    <DataRow key={finding.finding_id} label={finding.title ?? 'Finding'} value={humanize(finding.severity)} mono={false} />
+                  ))
+                ) : (
+                  <span className="sen-row-value muted">NONE</span>
+                )}
+              </div>
+              <div className="detail-section">
+                <SectionLabel>Change requests</SectionLabel>
+                {relatedRequestsForApp(selectedApp).length ? (
+                  relatedRequestsForApp(selectedApp).map((request) => (
+                    <DataRow key={request.request_id} label={request.request_id ?? ''} value={humanize(request.approval_status, 'NOT APPROVED')} mono={false} />
+                  ))
+                ) : (
+                  <span className="sen-row-value muted">NONE</span>
+                )}
+              </div>
+              {viewMode === 'technical' && (
+                <div className="detail-section wide">
+                  <SectionLabel>Evidence</SectionLabel>
+                  <EvidenceBlock data={selectedApp} />
+                </div>
+              )}
+            </div>
+          </div>
+        </MachinePanel>
+      )}
     </div>
   )
 
-  const renderChangeRequests = () => (
-    <div className="page-stack">
-      <div className="panel-card">
-        <h2>Owner review queue</h2>
-        <div className="stats-row">
-          <MetricCard label="Open" value={String(changeRequests.filter((item) => (item.approval_status ?? 'NOT_APPROVED') !== 'APPROVED').length)} status="warning" />
-          <MetricCard label="High" value={String(changeRequests.filter((item) => (item.severity ?? 'UNKNOWN').toLowerCase() === 'high').length)} status="failed" />
-          <MetricCard label="Warning" value={String(changeRequests.filter((item) => (item.status ?? 'DRAFT').toLowerCase() === 'warning').length)} status="warning" />
-          <MetricCard label="Awaiting review" value={String(changeRequests.filter((item) => (item.approval_status ?? 'NOT_APPROVED') === 'NOT_APPROVED').length)} status="unknown" />
-          <MetricCard label="Approved" value="0" status="healthy" />
-        </div>
-        <div className="card-grid">
-          {changeRequests.length ? changeRequests.map((request) => <ChangeRequestCard key={request.request_id ?? 'request'} request={request} mode={viewMode} />) : <div className="empty-state-inline">No change requests are available.</div>}
-        </div>
+  const renderChangeRequests = () => {
+    const openCount = changeRequests.filter((item) => (item.approval_status ?? 'NOT_APPROVED') !== 'APPROVED').length
+    const highCount = changeRequests.filter((item) => (item.severity ?? '').toLowerCase() === 'high').length
+    const warningCount = changeRequests.filter((item) => (item.severity ?? '').toLowerCase() === 'warning').length
+    const awaitingCount = changeRequests.filter((item) => (item.approval_status ?? 'NOT_APPROVED') === 'NOT_APPROVED').length
+    const approvedCount = changeRequests.filter((item) => item.approval_status === 'APPROVED').length
+
+    return (
+      <div className="page-stack">
+        <MachinePanel
+          title={
+            <span className="panel-title-with-tip">
+              Owner review queue
+              <InfoTip term="Change Request" />
+            </span>
+          }
+        >
+          <div className="stats-row">
+            <MetricBlock label="Open" value={String(openCount)} status="warning" />
+            <MetricBlock label="High" value={String(highCount)} status="failed" />
+            <MetricBlock label="Warning" value={String(warningCount)} status="warning" />
+            <MetricBlock label="Awaiting review" value={String(awaitingCount)} status="unknown" />
+            <MetricBlock label="Approved" value={String(approvedCount)} status="healthy" />
+          </div>
+
+          {changeRequests.length ? (
+            <MachineTable columns={['HCR ID', 'TITLE', 'CATEGORY', 'SEVERITY', 'STATUS', 'PERMISSION', 'APPROVAL']}>
+              {changeRequests.map((request, index) => (
+                <tr
+                  key={`${request.request_id ?? 'request'}-${index}`}
+                  className={`clickable${selectedRequestId === request.request_id ? ' selected' : ''}`}
+                  onClick={() => setSelectedRequestId(request.request_id ?? null)}
+                >
+                  <td className="mono">{request.request_id}</td>
+                  <td>{request.title}</td>
+                  <td className="mono">{humanize(request.category, 'UNKNOWN')}</td>
+                  <td className="mono">{humanize(request.severity)}</td>
+                  <td className="mono">{humanize(request.status, 'DRAFT')}</td>
+                  <td>
+                    <PermissionTag level={request.required_permission_level} />
+                  </td>
+                  <td>
+                    <StatusBadge status={request.approval_status} label={humanize(request.approval_status, 'NOT APPROVED')} />
+                  </td>
+                </tr>
+              ))}
+            </MachineTable>
+          ) : (
+            <EmptyState message="No change requests are available." />
+          )}
+        </MachinePanel>
+
+        {selectedRequest && (
+          <MachinePanel
+            title={`Change request detail — ${selectedRequest.request_id}`}
+            actions={
+              <button type="button" className="sen-btn secondary" onClick={() => setSelectedRequestId(null)}>
+                CLOSE
+              </button>
+            }
+          >
+            <div className="cr-detail">
+              <div className="cr-banner">NO ACTION AUTHORIZED</div>
+              <div className="detail-section">
+                <SectionLabel>Problem</SectionLabel>
+                <p className="sen-explain-line">{selectedRequest.description || 'No problem description recorded.'}</p>
+              </div>
+              <div className="detail-section">
+                <SectionLabel>Simple explanation</SectionLabel>
+                <p className="sen-explain-line">{categoryCopy(selectedRequest.category).simple}</p>
+              </div>
+              <div className="detail-section">
+                <SectionLabel>Why it matters</SectionLabel>
+                <p className="sen-explain-line">{categoryCopy(selectedRequest.category).why}</p>
+              </div>
+              <div className="detail-section">
+                <SectionLabel>Verified condition</SectionLabel>
+                <p className="sen-explain-line">{selectedRequest.verified_condition || 'UNKNOWN'}</p>
+              </div>
+              <div className="detail-section">
+                <SectionLabel>Verified root cause</SectionLabel>
+                <p className="sen-explain-line">{selectedRequest.verified_root_cause || 'UNKNOWN'}</p>
+              </div>
+              {viewMode === 'technical' && (
+                <div className="detail-section wide">
+                  <SectionLabel>Evidence</SectionLabel>
+                  <EvidenceBlock data={selectedRequest.evidence ?? 'No structured evidence provided.'} />
+                </div>
+              )}
+              <div className="detail-section">
+                <SectionLabel>Requested outcome</SectionLabel>
+                <p className="sen-explain-line">{selectedRequest.requested_outcome || 'Not specified.'}</p>
+              </div>
+              <div className="detail-section">
+                <SectionLabel>Constraints</SectionLabel>
+                {(selectedRequest.constraints ?? []).length ? (
+                  <ul className="sen-list">
+                    {(selectedRequest.constraints ?? []).map((constraint) => (
+                      <li key={constraint}>{constraint}</li>
+                    ))}
+                  </ul>
+                ) : (
+                  <span className="sen-row-value muted">NONE RECORDED</span>
+                )}
+              </div>
+              <div className="detail-section">
+                <SectionLabel>Verification plan</SectionLabel>
+                {(selectedRequest.verification_plan ?? []).length ? (
+                  <ul className="sen-list">
+                    {(selectedRequest.verification_plan ?? []).map((step) => (
+                      <li key={step}>{step}</li>
+                    ))}
+                  </ul>
+                ) : (
+                  <span className="sen-row-value muted">NOT SPECIFIED</span>
+                )}
+              </div>
+              <div className="detail-section">
+                <SectionLabel>Required permission</SectionLabel>
+                <PermissionTag level={selectedRequest.required_permission_level} />
+                <p className="sen-explain-line">{permissionCopy(selectedRequest.required_permission_level).description}</p>
+              </div>
+              <div className="detail-section">
+                <SectionLabel>Approval status</SectionLabel>
+                <StatusBadge status={selectedRequest.approval_status} label={humanize(selectedRequest.approval_status, 'NOT APPROVED')} />
+              </div>
+            </div>
+          </MachinePanel>
+        )}
       </div>
-    </div>
-  )
+    )
+  }
 
   const renderFindings = () => (
     <div className="page-stack">
-      <div className="panel-card">
-        <h2>Findings</h2>
-        <div className="filter-row">
-          <span className="chip">All</span>
-          <span className="chip">Critical</span>
-          <span className="chip">High</span>
-          <span className="chip">Warning</span>
-          <span className="chip">Info</span>
-        </div>
-        <div className="card-grid">
-          {findings.length ? findings.map((finding) => (
-            <div className="finding-card panel-card" key={finding.finding_id ?? finding.title ?? 'finding'}>
-              <div className="card-row-between">
-                <strong>{finding.title ?? 'Finding'}</strong>
-                <StatusBadge status={finding.status} label={statusLabel(finding.status, 'UNKNOWN')} />
-              </div>
-              <p>{finding.description ?? 'No detailed description provided.'}</p>
-              <div className="meta-row">
-                <span>{finding.severity ?? 'INFO'}</span>
-                <span>{finding.affected_component ?? 'Unknown component'}</span>
-              </div>
-            </div>
-          )) : <div className="empty-state-inline">No findings are available.</div>}
-        </div>
-      </div>
+      <MachinePanel
+        title={
+          <span className="panel-title-with-tip">
+            Findings
+            <InfoTip term="Finding" />
+          </span>
+        }
+      >
+        {orderedFindings.length ? (
+          <MachineTable columns={['TIME', 'SEVERITY', 'SYSTEM', 'FINDING', 'RELATED REQUEST']}>
+            {orderedFindings.map((finding) => {
+              const relatedRequest = relatedRequestForFinding(finding)
+              const isExpanded = expandedFindingId === (finding.finding_id ?? finding.title)
+              const rowKey = finding.finding_id ?? finding.title ?? 'finding'
+              return (
+                <Fragment key={rowKey}>
+                  <tr
+                    className="clickable"
+                    onClick={() => setExpandedFindingId(isExpanded ? null : rowKey)}
+                  >
+                    <td className="mono">{findingTime}</td>
+                    <td>
+                      <StatusMark status={finding.status} label={humanize(finding.severity, 'INFO')} />
+                    </td>
+                    <td>{finding.affected_component ?? 'Unknown component'}</td>
+                    <td>{finding.title ?? 'Finding'}</td>
+                    <td className="mono">{relatedRequest?.request_id ?? 'NONE'}</td>
+                  </tr>
+                  {isExpanded && (
+                    <tr>
+                      <td colSpan={5}>
+                        <p className="sen-explain-line">{finding.description ?? 'No detailed description provided.'}</p>
+                        {viewMode === 'technical' && <EvidenceBlock data={finding.evidence ?? 'No evidence recorded.'} />}
+                      </td>
+                    </tr>
+                  )}
+                </Fragment>
+              )
+            })}
+          </MachineTable>
+        ) : (
+          <EmptyState message="No findings are available." />
+        )}
+      </MachinePanel>
     </div>
   )
 
   const renderActivity = () => (
     <div className="page-stack">
-      <div className="panel-card">
-        <h2>Activity stream</h2>
-        <div className="timeline">
-          {activity.length ? activity.map((item) => (
-            <div key={`${item.type ?? 'event'}-${item.time ?? Math.random()}`} className="timeline-item">
-              <div className="timeline-time">{prettyTime(item.time)}</div>
-              <div className="timeline-content">
-                <div className="timeline-meta"><strong>{item.type ?? 'event'}</strong> <StatusBadge status={item.status} label={(item.status ?? 'UNKNOWN').toUpperCase()} /></div>
-                <div>{item.message ?? 'No message recorded.'}</div>
+      <MachinePanel title="Activity stream">
+        {activity.length ? (
+          <div className="activity-list">
+            {activity.map((item, index) => (
+              <div key={`${item.type ?? 'event'}-${item.time ?? 'unknown'}-${index}`} className="activity-row">
+                <span className="sen-tech-value">{prettyTime(item.time)}</span>
+                <StatusMark status={item.status} label={humanize(item.status, 'UNKNOWN')} />
+                <span className="activity-type">{humanize(item.type, 'EVENT')}</span>
+                <span className="activity-message">{item.message ?? 'No message recorded.'}</span>
+                {viewMode === 'technical' && item.details && <EvidenceBlock data={item.details} />}
               </div>
-            </div>
-          )) : <div className="empty-state-inline">No activity has been recorded yet.</div>}
-        </div>
-      </div>
+            ))}
+          </div>
+        ) : (
+          <EmptyState message="No activity has been recorded yet." />
+        )}
+      </MachinePanel>
     </div>
   )
 
   const renderDocumentation = () => (
     <div className="page-stack">
-      <div className="panel-card">
-        <h2>Documentation</h2>
-        <div className="doc-tabs">
-          {docsCatalog.map((item) => (
-            <button key={`${item.group}-${item.file}`} type="button" className={selectedDoc === `${item.group}/${item.file}` ? 'tab active' : 'tab'} onClick={() => setSelectedDoc(`${item.group}/${item.file}`)}>
-              {item.label}
-            </button>
-          ))}
+      <MachinePanel title="Documentation" dense>
+        <div className="doc-layout">
+          <div className="doc-tree">
+            {(Object.keys(DOCS_CATALOG) as Array<keyof typeof DOCS_CATALOG>).map((stream) => (
+              <div key={stream} className="doc-stream">
+                <SectionLabel>{stream === 'ai' ? 'AI CONTEXT' : stream}</SectionLabel>
+                {DOCS_CATALOG[stream].map((file) => {
+                  const id = `${stream}/${file}`
+                  return (
+                    <button
+                      key={id}
+                      type="button"
+                      className={selectedDoc === id ? 'doc-link active' : 'doc-link'}
+                      onClick={() => setSelectedDoc(id)}
+                    >
+                      {file}
+                    </button>
+                  )
+                })}
+              </div>
+            ))}
+            <p className="sen-note">Public ROADMAP is owner controlled. No editing.</p>
+          </div>
+          <pre className="doc-viewer">{documentation || 'Document content is loading.'}</pre>
         </div>
-        <pre className="doc-viewer">{documentation || 'Document content is loading.'}</pre>
-      </div>
+      </MachinePanel>
     </div>
   )
 
   const renderSettings = () => (
     <div className="page-stack">
-      <div className="panel-card settings-card">
-        <h2>Settings</h2>
-        <div className="settings-grid">
-          <div className="setting-row"><span>Sentinel mode</span><strong>OBSERVATION</strong></div>
-          <div className="setting-row"><span>Hostless connection</span><strong>{settings?.hostless_configured ? 'CONFIGURED' : 'NOT CONFIGURED'}</strong></div>
-          <div className="setting-row"><span>SSH key</span><strong>{settings?.ssh_key_configured ? 'CONFIGURED' : 'NOT CONFIGURED'}</strong></div>
-          <div className="setting-row"><span>Simple / Technical mode</span><ViewModeToggle value={viewMode} onChange={setViewMode} /></div>
-          <div className="setting-row"><span>Auto-refresh</span><strong>OFF by default</strong></div>
-          <div className="setting-row"><span>Refresh interval</span><strong>{settings?.refresh_interval_seconds ?? 30}s</strong></div>
+      <MachinePanel title="Settings">
+        <DataRow label="Sentinel mode" value="OBSERVATION" />
+        <DataRow label="Hostless connection" value={settings?.hostless_configured ? 'CONFIGURED' : 'NOT CONFIGURED'} />
+        <DataRow label="SSH key" value={settings?.ssh_key_configured ? 'CONFIGURED' : 'NOT CONFIGURED'} />
+        <DataRow label="Auto-refresh" value={settings?.auto_refresh ? 'ON' : 'OFF'} />
+        <DataRow label="Refresh interval" value={`${settings?.refresh_interval_seconds ?? 30}s`} />
+        <div className="sen-row">
+          <span className="sen-row-label">View mode</span>
+          <ViewModeToggle value={viewMode} onChange={setViewMode} />
         </div>
-      </div>
+      </MachinePanel>
     </div>
   )
 
@@ -584,11 +857,17 @@ function App() {
   }
 
   if (loading) {
-    return <div className="app-shell"><div className="loading-state panel-card">Loading Sentinel runtime data…</div></div>
+    return (
+      <div className="app-shell">
+        <div className="sen-atmosphere" />
+        <LoadingState message="LOADING SENTINEL RUNTIME DATA…" />
+      </div>
+    )
   }
 
   return (
     <div className="app-shell">
+      <div className="sen-atmosphere" />
       <aside className="sidebar">
         <div className="brand-block">
           <div className="brand-mark">S</div>
@@ -599,31 +878,42 @@ function App() {
         </div>
         <nav className="nav-list">
           {navItems.map((item) => (
-            <button key={item.key} type="button" className={activePage === item.key ? 'nav-link active' : 'nav-link'} onClick={() => setActivePage(item.key)}>
+            <button
+              key={item.key}
+              type="button"
+              className={activePage === item.key ? 'nav-link active' : 'nav-link'}
+              onClick={() => setActivePage(item.key)}
+            >
               {item.label}
             </button>
           ))}
         </nav>
         <div className="sidebar-footer">
-          <ViewModeToggle value={viewMode} onChange={setViewMode} />
+          <SectionLabel>Observation mode</SectionLabel>
+          <p className="sen-note">NO AUTOMATIC REPAIRS</p>
         </div>
       </aside>
 
       <main className="main-panel">
-        <header className="topbar panel-card">
-          <div>
-            <p className="eyebrow">OBSERVATION MODE</p>
+        <header className="topbar">
+          <div className="topbar-brand">
+            <p className="eyebrow">OBSERVATION MODE · NO AUTOMATIC REPAIRS</p>
             <h1>STALLION SENTINEL</h1>
           </div>
           <div className="topbar-right">
-            <StatusBadge status={overallStatusValue} label={overallLabel} />
-            <button type="button" className="primary-button" onClick={refreshHeartbeat} disabled={isRefreshing}>
-              {isRefreshing ? 'REFRESHING...' : 'REFRESH HEARTBEAT'}
+            <DataRow label="Last heartbeat" value={prettyTime(status?.last_checked)} />
+            <StatusMark status={overallStatusValue} label={overallLabel} />
+            <ViewModeToggle value={viewMode} onChange={setViewMode} />
+            <button type="button" className="sen-btn primary" onClick={refreshHeartbeat} disabled={isRefreshing}>
+              {isRefreshing ? 'REFRESHING…' : 'REFRESH HEARTBEAT'}
             </button>
           </div>
         </header>
 
-        {error && <div className="error-banner">{error}</div>}
+        {error && <ErrorState message={error} />}
+        <div className="page-header-row">
+          <SectionLabel>{navItems.find((item) => item.key === activePage)?.label}</SectionLabel>
+        </div>
         {pages[activePage]}
       </main>
     </div>

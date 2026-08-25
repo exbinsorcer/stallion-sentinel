@@ -1,0 +1,157 @@
+/*
+  STALLION SENTINEL — BLACK MACHINE DESIGN TOKENS
+  Centralized palette, type, spacing and motion tokens for the
+  Operations Console. No warm colors. No gradients. No drop shadows.
+*/
+
+:root {
+  /* ---- surfaces ---- */
+  --sen-bg: #050506;
+  --sen-bg-elevated: #0a0b0d;
+  --sen-bg-elevated-2: #101114;
+  --sen-bg-inset: #030304;
+  --sen-bg-hover: #16171b;
+
+  /* ---- borders ---- */
+  --sen-border: #24262b;
+  --sen-border-strong: #3a3d44;
+  --sen-border-hair: rgba(255, 255, 255, 0.06);
+  --sen-border-accent: rgba(77, 166, 255, 0.55);
+
+  /* ---- text ---- */
+  --sen-text: #f6f7f8;
+  --sen-text-dim: #9aa0ab;
+  --sen-text-mute: #5a5f68;
+  --sen-text-inverse: #050506;
+
+  /* ---- accent (electric blue, sparing) ---- */
+  --sen-accent: #4da6ff;
+  --sen-accent-soft: rgba(77, 166, 255, 0.12);
+  --sen-accent-strong: #8cc8ff;
+
+  /* ---- steel / unknown ---- */
+  --sen-steel: #7d8492;
+  --sen-steel-soft: rgba(125, 132, 146, 0.14);
+
+  /* ---- restrained status accents (marker-only use) ---- */
+  --sen-ok: #35d488;
+  --sen-warn: #f5a623;
+  --sen-fail: #ff5a5f;
+  --sen-unknown: var(--sen-steel);
+
+  /* ---- type ---- */
+  --sen-font-sans: 'Space Grotesk', 'Inter', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --sen-font-mono: 'JetBrains Mono', 'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+
+  /* ---- spacing ---- */
+  --sen-space-1: 4px;
+  --sen-space-2: 8px;
+  --sen-space-3: 12px;
+  --sen-space-4: 16px;
+  --sen-space-5: 20px;
+  --sen-space-6: 28px;
+
+  /* ---- radius: near-zero, machine-cut ---- */
+  --sen-radius-sm: 2px;
+  --sen-radius-md: 3px;
+
+  /* ---- motion ---- */
+  --sen-fast: 120ms ease;
+  --sen-med: 200ms ease;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  min-height: 100vh;
+  background: var(--sen-bg);
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  color: var(--sen-text);
+  font-family: var(--sen-font-sans);
+  font-size: 14px;
+  line-height: 1.45;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+  color: inherit;
+}
+
+h1,
+h2,
+h3,
+h4,
+p {
+  margin: 0;
+}
+
+/* ---- machine atmosphere: extremely subtle grid + scanline ---- */
+.sen-atmosphere {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  background-image:
+    linear-gradient(rgba(255, 255, 255, 0.018) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.018) 1px, transparent 1px);
+  background-size: 42px 42px;
+}
+
+.sen-atmosphere::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(180deg, transparent 0%, rgba(77, 166, 255, 0.035) 50%, transparent 100%);
+  height: 220px;
+  animation: sen-scan 9s linear infinite;
+}
+
+@keyframes sen-scan {
+  0% {
+    transform: translateY(-220px);
+  }
+  100% {
+    transform: translateY(100vh);
+  }
+}
+
+@keyframes sen-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.45;
+  }
+}
+
+@keyframes sen-flash {
+  0% {
+    opacity: 0.9;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sen-atmosphere::after {
+    animation: none;
+    display: none;
+  }
+}

@@ -105,10 +105,11 @@ def get_status_summary(project_root: Path | None = None) -> dict[str, Any]:
         if "core" in str(check.get("category", "")).lower() or check.get("name", "").lower() in {"docker engine", "hostless core backend", "hostless core frontend", "mongodb", "caddy", "hostless platform tls", "ram", "disk"}
     ]
     apps = []
-    for check in checks:
-        evidence = check.get("evidence") or {}
-        if "applications" in evidence or "apps" in evidence:
-            apps_payload = evidence.get("applications") or evidence.get("apps") or []
+
+    def _collect_apps(evidence_key: str) -> None:
+        for check in checks:
+            evidence = check.get("evidence") or {}
+            apps_payload = evidence.get(evidence_key)
             if isinstance(apps_payload, list):
                 for app in apps_payload:
                     if isinstance(app, dict):
@@ -124,6 +125,14 @@ def get_status_summary(project_root: Path | None = None) -> dict[str, Any]:
                             "frontend_http_health": app.get("frontend_http_health"),
                             "tls_status": app.get("frontend_tls_status") or app.get("api_tls_status") or "UNKNOWN",
                         })
+
+    # "applications" evidence (from the structured application-map check) is
+    # authoritative. Only fall back to the raw "apps" discovery evidence when
+    # no structured application map is present, to avoid double-counting the
+    # same application from two different checks.
+    _collect_apps("applications")
+    if not apps:
+        _collect_apps("apps")
     if not apps:
         for check in checks:
             if "app" in str(check.get("name", "")).lower() and isinstance(check.get("evidence"), dict):

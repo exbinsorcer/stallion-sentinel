@@ -52,10 +52,11 @@ def list_apps() -> list[dict[str, Any]]:
         return []
     checks = run.get("checks", [])
     apps: list[dict[str, Any]] = []
-    for check in checks:
-        evidence = check.get("evidence") or {}
-        if "applications" in evidence or "apps" in evidence:
-            payload = evidence.get("applications") or evidence.get("apps") or []
+
+    def _collect(evidence_key: str) -> None:
+        for check in checks:
+            evidence = check.get("evidence") or {}
+            payload = evidence.get(evidence_key)
             if isinstance(payload, list):
                 for app in payload:
                     if isinstance(app, dict):
@@ -67,11 +68,22 @@ def list_apps() -> list[dict[str, Any]]:
                             "frontend_container": app.get("frontend_container"),
                             "backend_state": app.get("backend_state"),
                             "frontend_state": app.get("frontend_state"),
+                            "backend_docker_health": app.get("backend_docker_health"),
+                            "frontend_docker_health": app.get("frontend_docker_health"),
                             "backend_http_health": app.get("backend_http_health"),
                             "frontend_http_health": app.get("frontend_http_health"),
                             "tls_status": app.get("frontend_tls_status") or app.get("api_tls_status") or "UNKNOWN",
+                            "network": app.get("network"),
                             "last_checked": check.get("checked_at"),
                         })
+
+    # "applications" evidence (from the structured application-map check) is
+    # authoritative. Only fall back to the raw "apps" discovery evidence when
+    # no structured application map is present, to avoid double-counting the
+    # same application from two different checks.
+    _collect("applications")
+    if not apps:
+        _collect("apps")
     return apps
 
 
